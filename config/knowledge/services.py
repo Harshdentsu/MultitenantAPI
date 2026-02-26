@@ -1,11 +1,12 @@
 
 import os
 from pathlib import Path
+from typing import Any
 
 from django.conf import settings
 from langchain.schema import HumanMessage, SystemMessage
 from langchain_community.document_loaders import Docx2txtLoader, PyMuPDFLoader, TextLoader
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pgvector.django import CosineDistance
@@ -18,21 +19,18 @@ _text_splitter = None
 _chat_model = None
 
 
-def _get_embedding_model() -> HuggingFaceEmbeddings:
-    """Load LangChain HuggingFace embedding model once."""
+def _get_embedding_model() -> Any:
     global _embedding_model
     if _embedding_model is None:
-        model_name = getattr(
-            settings,
-            "HUGGINGFACE_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
-        _embedding_model = HuggingFaceEmbeddings(model_name=model_name)
+        model_name = getattr(settings, "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        _embedding_model = OpenAIEmbeddings(
+                model=model_name,
+                api_key=settings.OPENAI_API_KEY,
+            )
     return _embedding_model
 
 
 def _get_text_splitter() -> RecursiveCharacterTextSplitter:
-    """Load LangChain text splitter once, using project settings for sizing."""
     global _text_splitter
     if _text_splitter is None:
         chunk_size = getattr(settings, "RAG_CHUNK_SIZE", 800)
@@ -45,7 +43,7 @@ def _get_text_splitter() -> RecursiveCharacterTextSplitter:
 
 
 def _get_chat_model() -> ChatOpenAI:
-    """Lazy‑load LangChain ChatOpenAI model."""
+    
     global _chat_model
     if _chat_model is None:
         chat_model_name = getattr(settings, "OPENAI_CHAT_MODEL", "gpt-4o-mini")
@@ -58,10 +56,7 @@ def _get_chat_model() -> ChatOpenAI:
 
 
 def process_document(document: Document) -> tuple[int, str]:
-    """
-    Extract text from document file, chunk, embed, and save DocumentChunk rows for this org.
-    Returns (chunks_created, error_message). error_message is empty on success.
-    """
+    
     if not document.file:
         return 0, "Document has no file"
 
@@ -99,8 +94,11 @@ def process_document(document: Document) -> tuple[int, str]:
         return 0, "No chunks produced"
 
    
-    embedder = _get_embedding_model()
-    embeddings = embedder.embed_documents(texts)
+    try:
+        embedder = _get_embedding_model()
+        embeddings = embedder.embed_documents(texts)
+    except Exception as exc:
+        return 0, f"Failed to generate embeddings: {exc}"
     if len(embeddings) != len(texts):
         return 0, "Embedding count mismatch"
  
@@ -118,7 +116,6 @@ def process_document(document: Document) -> tuple[int, str]:
 
 
 def search_chunks(organization, query_embedding: list, top_k: int = None):
-    """Return top_k DocumentChunks for this org by cosine similarity (smaller distance = more similar)."""
     top_k = top_k or getattr(settings, "RAG_TOP_K", 5)
     return (
         DocumentChunk.objects.filter(organization=organization)
@@ -129,20 +126,20 @@ def search_chunks(organization, query_embedding: list, top_k: int = None):
 
 
 def rag_ask(organization, question: str) -> str:
-    """
-    Answer question using only this organization's documents (private RAG).
-    Embeds question with Hugging Face, retrieves nearest chunks, then generates answer with OpenAI chat.
-    """
     if not question or not question.strip():
         return "Please provide a question."
 
-    embedder = _get_embedding_model()
-    query_embedding = embedder.embed_query(question.strip())
+    try:
+        embedder = _get_embedding_model()
+        query_embedding = embedder.embed_query(question.strip())
+    except Exception:
+        return (
+            "Embedding model is unavailable. Check OPENAI_API_KEY, "
+        )
     chunks = search_chunks(organization, query_embedding)
     if not chunks:
         return (
-            "I don't have any documents for your organization yet, or they haven't been processed. "
-            "Upload documents first, then try again."
+            "I don't have any documents for your organization yet "
         )
     context = "\n\n---\n\n".join(c.text for c in chunks)
     system = (

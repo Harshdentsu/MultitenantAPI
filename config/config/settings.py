@@ -5,6 +5,8 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
+SECRET_KEY = os.getenv("SECRET_KEY" )
+DEBUG = os.getenv("DEBUG")
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
@@ -51,6 +53,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
 DATABASES = {
     "default": {
@@ -85,9 +88,14 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 
 STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+RAG_EMBEDDING_DIMENSION = int(os.getenv("RAG_EMBEDDING_DIMENSION", "384"))
 
 RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE"))
 RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP"))
 RAG_TOP_K = int(os.getenv("RAG_TOP_K"))
+
+

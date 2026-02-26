@@ -1,11 +1,5 @@
-"""
-JWT authentication that attaches request.organization from the authenticated user.
-
-This keeps organization resolution in the DRF authentication layer for JWT APIs.
-"""
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.exceptions import AuthenticationFailed
-
 
 class JWTAuthenticationWithOrganization(JWTAuthentication):
 

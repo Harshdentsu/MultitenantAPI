@@ -6,10 +6,6 @@ from .services import rag_ask
 
 
 class AskView(APIView):
-    """
-    Private RAG endpoint: answer questions using only this organization's documents.
-    Requires JWT authentication.
-    """
 
     def post(self, request):
         question = request.data.get("question") if isinstance(request.data, dict) else None
