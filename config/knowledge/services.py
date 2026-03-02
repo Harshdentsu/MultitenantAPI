@@ -2,9 +2,10 @@
 import os
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from django.conf import settings
-from langchain.schema import HumanMessage, SystemMessage
+from langchain.schema import AIMessage, HumanMessage, SystemMessage
 from langchain_community.document_loaders import Docx2txtLoader, PyMuPDFLoader, TextLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_openai import ChatOpenAI
@@ -12,7 +13,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pgvector.django import CosineDistance
 
 from documents.models import Document
-from .models import DocumentChunk
+from .models import ConversationMessage, ConversationSession, DocumentChunk
 
 _embedding_model = None
 _text_splitter = None
@@ -25,6 +26,7 @@ def _get_embedding_model() -> Any:
         model_name = getattr(settings, "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
         _embedding_model = OpenAIEmbeddings(
                 model=model_name,
+                dimensions=384,
                 api_key=settings.OPENAI_API_KEY,
             )
     return _embedding_model
@@ -125,35 +127,78 @@ def search_chunks(organization, query_embedding: list, top_k: int = None):
     )
 
 
-def rag_ask(organization, question: str) -> str:
+def _get_or_create_session(organization, session_id: str | None) -> ConversationSession:
+    if session_id:
+        try:
+            session_uuid = UUID(str(session_id))
+            return ConversationSession.objects.get(id=session_uuid, organization=organization)
+        except (ValueError, ConversationSession.DoesNotExist):
+            pass
+    return ConversationSession.objects.create(organization=organization)
+
+
+def _build_history_messages(session: ConversationSession) -> list:
+    history = (
+        ConversationMessage.objects.filter(session=session, organization=session.organization)
+        .order_by("-created_at")[:20]
+    )
+    history = list(reversed(history))
+    messages = []
+    for msg in history:
+        if msg.role == ConversationMessage.ROLE_USER:
+            messages.append(HumanMessage(content=msg.content))
+        elif msg.role == ConversationMessage.ROLE_ASSISTANT:
+            messages.append(AIMessage(content=msg.content))
+    return messages
+
+
+def rag_ask(organization, question: str, session_id: str | None = None) -> tuple[str, str]:
     if not question or not question.strip():
-        return "Please provide a question."
+        return "Please provide a question.", ""
+
+    session = _get_or_create_session(organization, session_id)
+    clean_question = question.strip()
 
     try:
         embedder = _get_embedding_model()
-        query_embedding = embedder.embed_query(question.strip())
+        query_embedding = embedder.embed_query(clean_question)
     except Exception:
         return (
             "Embedding model is unavailable. Check OPENAI_API_KEY, "
-        )
+        ), str(session.id)
     chunks = search_chunks(organization, query_embedding)
     if not chunks:
         return (
             "I don't have any documents for your organization yet "
-        )
+        ), str(session.id)
     context = "\n\n---\n\n".join(c.text for c in chunks)
     system = (
         "You are a helpful assistant. Answer the user's question using ONLY the following context "
-        "from their organization's documents. If the context does not contain enough information, "
-        "say so. Do not make up information or use external knowledge."
+        "from their organization's documents and prior conversation turns. "
+        "If the context does not contain enough information, say so. "
+        "Do not make up information or use external knowledge."
     )
-    user = f"Context:\n{context}\n\nQuestion: {question}"
+    user = f"Context:\n{context}\n\nQuestion: {clean_question}"
 
     chat_model = _get_chat_model()
-    response = chat_model.invoke(
+    messages = [SystemMessage(content=system), *_build_history_messages(session), HumanMessage(content=user)]
+    response = chat_model.invoke(messages)
+    answer = response.content or ""
+
+    ConversationMessage.objects.bulk_create(
         [
-            SystemMessage(content=system),
-            HumanMessage(content=user),
+            ConversationMessage(
+                organization=organization,
+                session=session,
+                role=ConversationMessage.ROLE_USER,
+                content=clean_question,
+            ),
+            ConversationMessage(
+                organization=organization,
+                session=session,
+                role=ConversationMessage.ROLE_ASSISTANT,
+                content=answer,
+            ),
         ]
     )
-    return response.content or ""
+    return answer, str(session.id)

@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 from pgvector.django import VectorField
 
 from core.models import TenantAwareModel
@@ -25,3 +26,46 @@ class DocumentChunk(TenantAwareModel):
 
     def __str__(self):
         return f"Chunk {self.order} of {self.document_id}"
+
+
+class ConversationSession(TenantAwareModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["organization", "updated_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.organization_id}:{self.id}"
+
+
+class ConversationMessage(TenantAwareModel):
+    ROLE_USER = "user"
+    ROLE_ASSISTANT = "assistant"
+    ROLE_CHOICES = (
+        (ROLE_USER, "User"),
+        (ROLE_ASSISTANT, "Assistant"),
+    )
+
+    session = models.ForeignKey(
+        ConversationSession,
+        on_delete=models.CASCADE,
+        related_name="messages",
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["organization", "session", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.session_id}:{self.role}"
